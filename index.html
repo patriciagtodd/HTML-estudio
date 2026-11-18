@@ -2616,8 +2616,8 @@ document.querySelectorAll("#main .quiz").forEach(box => {
   function next(){
     i = (i + 1) % pool.length; q = pool[i]; sel = []; done = false; chk.disabled = false;
     const fixed = q.o.some(o => FIXED_T.test(o.trim()));
-    perm = q.o.map((_, k) => k); if (!fixed) shuffle(perm);
-    body.innerHTML = `<div class="src">${esc(q.src)}</div><div class="q">${esc(q.q)}</div><div class="kind">${KIND_TXT[q.k]}</div>` +
+    perm = q.o.map((_, k) => k); if (!fixed) shuffle(perm);`<div c
+    body.innerHTML = `<div class="src">${esc(q.src)}</div><div class="q">${q.question}</div><div class="kind">${KIND_TXT[q.k]}</div>` +
       (q.img ? `<img src="${IMAGES[q.img]}" alt="">` + (q.ref ? `<div class="kind">${IMG_REF_NOTE}</div>` : "") : "") +
       perm.map(k => `<button class="opt" data-k="${k}">${esc(q.o[k])}</button>`).join("") +
       `<div class="ex"><b class="vd"></b> ${esc(q.w)}${q.j ? `<div class="trap" style="margin:8px 0 0">Ojo: ${esc(q.j)}</div>` : ""}</div>`;

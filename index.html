@@ -637,7 +637,7 @@
       <span id="hdr-score" class="pill hidden"></span>
       <span id="hdr-timer" class="pill timer hidden">00:00</span>
       <button id="btn-theme" class="btn btn-sm" type="button" title="Cambiar tema claro/oscuro">🌙 Oscuro</button>
-      <button id="btn-back-setup" class="btn btn-sm hidden" type="button">⚙ Configurar</button>
+      <button id="btn-back-setup" class="btn btn-sm hidden" type="button">💾 Guardar y salir al menú</button>
     </div>
   </div>
 </header>
@@ -1963,11 +1963,12 @@ R sist/R pulm = ΔP sist/ΔP pulm
         </div>
       </div>
 
+      <div id="resume-box" class="parcial-box hidden"></div>
       <div id="parcial-info" class="parcial-box hidden"></div>
       <div id="stats-row" class="stats-row"></div>
       <div class="start-bar">
         <div id="setup-count" class="count-preview"></div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;"><button id="btn-wrong" class="btn" type="button">↻ Repasar las que erré (0)</button><button id="btn-start" class="btn btn-primary" type="button">Comenzar ahora →</button></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;"><button id="btn-wrong" class="btn" type="button">↻ Repasar las que erré (0)</button><button id="btn-pend" class="btn" type="button">⏳ Repasar pendientes (0)</button><button id="btn-start" class="btn btn-primary" type="button">Comenzar ahora →</button></div>
       </div>
     </div>
   </section>
@@ -2025,7 +2026,7 @@ const FIXED = /anterior|^todas|^ninguna|solo algunas|las dos primeras|^verdadero
 const SKEY = "biofisica_simulador_palo_v1";
 let mem = null;
 function ld(){ if (mem) return mem; let s=null; try { s = JSON.parse(localStorage.getItem(SKEY)||"null"); } catch(e){}
-  mem = s && typeof s==="object" ? s : {}; mem.seen=mem.seen||{}; mem.wrong=mem.wrong||{}; mem.attempts=mem.attempts||0; return mem; }
+  mem = s && typeof s==="object" ? s : {}; mem.seen=mem.seen||{}; mem.wrong=mem.wrong||{}; mem.pend=mem.pend||{}; mem.sess=mem.sess||{}; mem.attempts=mem.attempts||0; return mem; }
 function sv(){ try { localStorage.setItem(SKEY, JSON.stringify(mem)); } catch(e){} }
 function isExamLike(){ return state.mode === "exam" || state.mode === "parcial"; }
 function fresh(list){ const st=ld(); return shuffleArray(list).sort((x,y)=>{ const a=st.seen[x.id], b=st.seen[y.id];
@@ -2042,9 +2043,92 @@ function pickParcial(){ const out=[], groups=new Set();
 // copia con las opciones mezcladas (salvo "todas / ninguna / las anteriores…") y los índices correctos remapeados
 function prepare(q){ const idx=q.options.map((_,i)=>i); const fixed=q.keep_order || q.options.some(o=>FIXED.test(o.trim()));
   const perm = fixed ? idx : shuffleArray(idx);
-  return Object.assign({}, q, { options: perm.map(i=>q.options[i]), correct: q.correct.map(c=>perm.indexOf(c)) }); }
+  return Object.assign({}, q, { options: perm.map(i=>q.options[i]), correct: q.correct.map(c=>perm.indexOf(c)), _perm: perm }); }
 function recordAnswer(q){ const st=ld(); const ev=evaluateQuestion(q, state.selections[q.id]);
   if (ev.exact) delete st.wrong[q.id]; else st.wrong[q.id]=1; sv(); }
+
+/* ===== Guardar y seguir después (práctica y simulacro libre) ===== */
+function canSave(){ return (state.mode === "practice" || state.mode === "exam") && state.activeQuestions.length > 0 && !state.finished && !!state.sessKey; }
+function saveSession(){
+  if (!canSave()) return;
+  const st = ld(), sel = {}, chk = {}, flg = {};
+  state.activeQuestions.forEach(q => {
+    const s = state.selections[q.id];
+    if (state.checked[q.id]) chk[q.id] = true;
+    if (state.flagged[q.id]) flg[q.id] = true;
+    if (s && s.size) {                                   // respondida: queda registrada como bien o mal
+      sel[q.id] = [...s]; delete st.pend[q.id];
+      if (evaluateQuestion(q, s).exact) delete st.wrong[q.id]; else st.wrong[q.id] = 1;
+    } else st.pend[q.id] = 1;                            // sin responder: queda pendiente
+  });
+  st.sess[state.sessKey] = { mode: state.mode, section: state.section, year: state.year, dedupe: state.dedupe, view: state.view,
+    ids: state.activeQuestions.map(q => q.id), perms: Object.fromEntries(state.activeQuestions.map(q => [q.id, q._perm])),
+    sel, chk, flg, idx: state.currentIdx, timer: state.timerSec, label: state.sessLabel };
+  sv();
+}
+function discardSession(key){
+  const st = ld(), s = st.sess[key]; if (!s) return;
+  s.ids.forEach(id => { if (!s.sel[id]) delete st.pend[id]; });   // lo no respondido de una sesión descartada deja de ser pendiente
+  delete st.sess[key]; sv();
+}
+function finalizeSession(){                               // al finalizar: lo respondido se registra, lo no respondido queda pendiente
+  if (state.mode === "parcial") return;
+  const st = ld();
+  state.activeQuestions.forEach(q => {
+    if (state.selections[q.id] && state.selections[q.id].size) delete st.pend[q.id];
+    else if (state.mode === "practice") st.pend[q.id] = 1;
+  });
+  if (state.sessKey) delete st.sess[state.sessKey];
+  sv();
+}
+function startTimerFrom(sec){
+  const timerEl = document.getElementById("hdr-timer");
+  state.timerSec = sec; timerEl.classList.remove("hidden", "urgent"); timerEl.classList.toggle("urgent", sec <= 300);
+  timerEl.textContent = "⏱ " + formatTime(sec);
+  state.timerId = setInterval(() => {
+    if (state.finished) { stopTimer(); return; }
+    state.timerSec--;
+    if (state.timerSec <= 300) timerEl.classList.add("urgent");
+    timerEl.textContent = "⏱ " + formatTime(Math.max(0, state.timerSec));
+    if (state.timerSec % 10 === 0) saveSession();
+    if (state.timerSec <= 0) finishSession(true);
+  }, 1000);
+}
+function resumeSession(key){
+  const st = ld(), s = st.sess[key]; if (!s) return;
+  const byId = Object.fromEntries(ALL_QUESTIONS.map(q => [q.id, q]));
+  const qs = s.ids.filter(id => byId[id]).map(id => { const o = byId[id], p = s.perms[id] || o.options.map((_, i) => i);
+    return Object.assign({}, o, { options: p.map(i => o.options[i]), correct: o.correct.map(c => p.indexOf(c)), _perm: p }); });
+  if (!qs.length) return;
+  stopTimer();
+  state.mode = s.mode; state.section = s.section; state.year = s.year; state.dedupe = s.dedupe; state.view = s.view;
+  state.sessKey = key; state.sessLabel = s.label; state.activeQuestions = qs; state.selections = {};
+  qs.forEach(q => { if (s.sel[q.id]) state.selections[q.id] = new Set(s.sel[q.id]); });
+  state.checked = Object.assign({}, s.chk); state.flagged = Object.assign({}, s.flg);
+  state.currentIdx = Math.min(s.idx || 0, qs.length - 1); state.finished = false;
+  syncModeCards(); renderTopicCards();
+  document.querySelectorAll("[data-view]").forEach(c => c.classList.toggle("active", c.getAttribute("data-view") === state.view));
+  document.getElementById("sel-year").value = state.year; document.getElementById("chk-dedupe").checked = state.dedupe;
+  document.getElementById("setup-screen").classList.add("hidden");
+  document.getElementById("quiz-screen").classList.remove("hidden");
+  document.getElementById("results-banner").classList.add("hidden");
+  document.getElementById("btn-back-setup").classList.remove("hidden");
+  document.getElementById("hdr-progress").classList.remove("hidden");
+  document.getElementById("hdr-score").classList.remove("hidden");
+  if (state.mode === "exam" && s.timer > 0) startTimerFrom(s.timer); else document.getElementById("hdr-timer").classList.add("hidden");
+  renderQuiz(); window.scrollTo({ top: 0, behavior: "smooth" });
+}
+function renderResumeBox(){
+  const box = document.getElementById("resume-box"), st = ld();
+  const keys = [state.mode + "|" + state.section, "repaso"].filter(k => st.sess[k] && (state.mode !== "parcial" || k === "repaso"));
+  box.classList.toggle("hidden", keys.length === 0);
+  box.innerHTML = keys.map(k => { const s = st.sess[k], tot = s.ids.length, ans = Object.keys(s.sel).length, bad = s.ids.filter(id => s.sel[id] && st.wrong[id]).length;
+    return `<div style="margin:6px 0"><b>▶ Sesión guardada: ${s.label}</b> — respondidas ${ans}/${tot} · mal ${bad} · pendientes ${tot - ans}
+      <button class="btn btn-sm btn-primary" data-resume="${k}">Continuar</button> <button class="btn btn-sm" data-discard="${k}">Descartar</button></div>`; }).join("");
+  box.querySelectorAll("[data-resume]").forEach(b => b.onclick = () => resumeSession(b.dataset.resume));
+  box.querySelectorAll("[data-discard]").forEach(b => b.onclick = () => {
+    if (confirm("¿Descartar la sesión guardada? Lo que ya quedó registrado como mal o pendiente se conserva.")) { discardSession(b.dataset.discard); updateSetupCount(); } });
+}
 
 const SECTIONS = [
   { key: "all", label: "Todo el Banco Completo", desc: "Todos los módulos, parciales y TPs" },
@@ -2121,7 +2205,7 @@ function renderTopicCards() {
     const active = state.section === sec.key ? "active" : "";
     return `
       <button type="button" class="select-card ${active}" data-section="${sec.key}">
-        <div class="sc-title">${sec.label} <span style="opacity:0.8">(${count})</span></div>
+        <div class="sc-title">${sec.label} <span style="opacity:0.8">(${count})</span>${ld().sess[state.mode + "|" + sec.key] ? ' <span class="badge badge-multi">en curso</span>' : ""}</div>
         <div class="sc-sub">${sec.desc}</div>
       </button>
     `;
@@ -2170,7 +2254,10 @@ function refreshSetupExtras(){
   const nw = Object.keys(st.wrong).filter(id => ALL_QUESTIONS.some(q => q.id === id)).length;
   const wb = document.getElementById("btn-wrong"); wb.disabled = nw === 0; wb.textContent = `↻ Repasar las que erré (${nw})`;
   const seen = ALL_QUESTIONS.filter(q => st.seen[q.id] !== undefined).length;
-  document.getElementById("stats-row").innerHTML = `<span>Intentos: <b>${st.attempts}</b></span><span>Vistas: <b>${seen}</b> de ${ALL_QUESTIONS.length}</span><span>Para repasar: <b>${nw}</b></span>`;
+  const npd = Object.keys(st.pend).filter(id => ALL_QUESTIONS.some(q => q.id === id)).length;
+  const pb = document.getElementById("btn-pend"); pb.disabled = npd === 0; pb.textContent = `⏳ Repasar pendientes (${npd})`;
+  document.getElementById("stats-row").innerHTML = `<span>Intentos: <b>${st.attempts}</b></span><span>Vistas: <b>${seen}</b> de ${ALL_QUESTIONS.length}</span><span>Para repasar: <b>${nw}</b></span><span>Pendientes: <b>${npd}</b></span>`;
+  renderResumeBox();
 }
 
 function formatTime(sec) {
@@ -2200,6 +2287,12 @@ function startSession(customList = null) {
     }
   }
   if (pool.length === 0) return;
+  state.sessKey = state.mode === "parcial" ? null : (customList ? "repaso" : state.mode + "|" + state.section);
+  state.sessLabel = customList ? "Repaso (erradas / pendientes)" : (SECTIONS.find(s => s.key === state.section) || {}).label + (state.mode === "exam" ? " · simulacro" : " · práctica");
+  if (state.sessKey && ld().sess[state.sessKey]) {
+    if (!confirm("Ya tenés una sesión guardada de «" + state.sessLabel + "».\nAceptar = empezar de cero (se descarta la guardada).\nCancelar = seguir con la guardada.")) { resumeSession(state.sessKey); return; }
+    discardSession(state.sessKey);
+  }
   { const st = ld(); st.attempts++; pool.forEach(q => st.seen[q.id] = st.attempts); sv(); }
   pool = pool.map(prepare);
 
@@ -2286,6 +2379,7 @@ function finishSession(byTimeout = false) {
     state.checked[q.id] = true;
     if (isExamLike() || (state.selections[q.id] && state.selections[q.id].size)) recordAnswer(q);
   });
+  finalizeSession();
   renderQuiz(byTimeout);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -2601,6 +2695,7 @@ function renderQuiz(byTimeout = false) {
   });
 
   renderResultsBanner(byTimeout);
+  saveSession();
 }
 
 function syncModeCards(){
@@ -2682,6 +2777,7 @@ function init() {
   document.getElementById("btn-check-all-practice").addEventListener("click", () => finishSession(false));
 
   document.getElementById("btn-back-setup").addEventListener("click", () => {
+    saveSession();
     stopTimer();
     document.getElementById("quiz-screen").classList.add("hidden");
     document.getElementById("setup-screen").classList.remove("hidden");
@@ -2689,6 +2785,13 @@ function init() {
     document.getElementById("hdr-progress").classList.add("hidden");
     document.getElementById("hdr-score").classList.add("hidden");
     document.getElementById("hdr-timer").classList.add("hidden");
+    renderTopicCards();
+    updateSetupCount();
+  });
+  window.addEventListener("beforeunload", saveSession);
+  document.getElementById("btn-pend").addEventListener("click", () => {
+    const st = ld(); const list = ALL_QUESTIONS.filter(q => st.pend[q.id]);
+    if (list.length) startSession(list);
   });
 
   document.getElementById("btn-theme").addEventListener("click", e => {
